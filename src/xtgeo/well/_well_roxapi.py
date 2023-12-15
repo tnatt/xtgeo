@@ -14,6 +14,7 @@ from xtgeo.common._xyz_enum import _AttrName, _AttrType
 from xtgeo.common.constants import UNDEF_INT_LIMIT, UNDEF_LIMIT
 from xtgeo.roxutils import RoxUtils
 
+
 xtg = XTGeoDialog()
 logger = null_logger(__name__)
 
@@ -32,19 +33,13 @@ def import_well_roxapi(
     lognames_strict=False,
     inclmd=False,
     inclsurvey=False,
+    v=1,
 ):  # pragma: no cover
     """Private function for loading project and ROXAPI well import."""
     rox = RoxUtils(project, readonly=True)
 
     result = _roxapi_import_well(
-        rox,
-        wname,
-        trajectory,
-        logrun,
-        lognames,
-        lognames_strict,
-        inclmd,
-        inclsurvey,
+        rox, wname, trajectory, logrun, lognames, lognames_strict, inclmd, inclsurvey, v
     )
 
     rox.safe_close()
@@ -52,7 +47,7 @@ def import_well_roxapi(
 
 
 def _roxapi_import_well(
-    rox, wname, traj, lrun, lognames, lognames_strict, inclmd, inclsurvey
+    rox, wname, traj, lrun, lognames, lognames_strict, inclmd, inclsurvey, v
 ):  # pragma: no cover
     """Private function for ROXAPI well import."""
     if wname in rox.project.wells:
@@ -74,7 +69,10 @@ def _roxapi_import_well(
     wlogrecords = {}
 
     # get logs repr trajecetry
-    mdlogname, logs = _roxapi_traj(roxtraj, roxlrun, inclmd, inclsurvey)
+    if v == 1:
+        mdlogname, logs = _roxapi_traj(roxtraj, roxlrun, inclmd, inclsurvey)
+    else:
+        mdlogname, logs = _roxapi_traj_v2(rox, roxtraj, roxlrun, inclmd, inclsurvey)
 
     if lognames and lognames == "all":
         for logcurv in roxlrun.log_curves:
@@ -103,6 +101,57 @@ def _roxapi_import_well(
     }
 
 
+def _roxapi_traj_v2(rox, roxtraj, roxlrun, inclmd, inclsurvey):  # pragma: no cover
+    """Get trajectory in ROXAPI."""
+
+    from scipy.interpolate import CubicSpline
+
+    survcolumns = ["M_MDEPTH", "M_INCL", "M_AZI", "X_UTME", "Y_UTMN", "Z_TVDSS"]
+
+    surveyset = roxtraj.survey_point_series
+    measured_depths = roxlrun.get_measured_depths()
+
+    survpoints = surveyset.get_survey_points().T
+    survarrays = dict(zip(survcolumns, survpoints))
+    md_surv = survarrays.pop("M_MDEPTH")
+
+    interpolated_arrays = {}
+    for name, arr in survarrays.items():
+        if name == "M_AZI":
+            arr = np.unwrap(np.deg2rad(arr))
+
+        if str(surveyset.interpolation_type) == "linear":
+            interp_values = np.interp(measured_depths, md_surv, arr)
+
+        elif str(surveyset.interpolation_type) == "minimum_curvature":
+            interp_function = CubicSpline(md_surv, arr)
+            interp_values = interp_function(measured_depths)
+
+        if name == "M_AZI":
+            interp_values = np.mod(np.rad2deg(interp_values), 360)
+
+        interpolated_arrays[name] = interp_values
+
+    logs = {}
+    logs[_AttrName.XNAME.value] = interpolated_arrays[_AttrName.XNAME.value]
+    logs[_AttrName.YNAME.value] = interpolated_arrays[_AttrName.YNAME.value]
+    logs[_AttrName.ZNAME.value] = interpolated_arrays[_AttrName.ZNAME.value]
+    if inclmd or inclsurvey:
+        logs[_AttrName.M_MD_NAME.value] = measured_depths
+        mdlogname = _AttrName.M_MD_NAME.value
+    if inclsurvey:
+        logs[_AttrName.M_INCL_NAME.value] = interpolated_arrays[
+            _AttrName.M_INCL_NAME.value
+        ]
+        logs[_AttrName.M_AZI_NAME.value] = interpolated_arrays[
+            _AttrName.M_AZI_NAME.value
+        ]
+
+    mdlogname = None if not inclmd else _AttrName.M_MD_NAME.value
+
+    return mdlogname, logs
+
+
 def _roxapi_traj(roxtraj, roxlrun, inclmd, inclsurvey):  # pragma: no cover
     """Get trajectory in ROXAPI."""
 
@@ -114,7 +163,7 @@ def _roxapi_traj(roxtraj, roxlrun, inclmd, inclsurvey):  # pragma: no cover
     geo_array_shape = (len(measured_depths), 6)
     geo_array = np.empty(geo_array_shape)
 
-    for ino, mdv in enumerate(mds):
+    for ino, mdv in enumerate(measured_depths):
         try:
             geo_array[ino] = surveyset.interpolate_survey_point(mdv)
         except ValueError:

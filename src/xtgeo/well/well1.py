@@ -77,6 +77,7 @@ def well_from_roxar(
     lognames_strict: bool | None = False,
     inclmd: bool | None = False,
     inclsurvey: bool | None = False,
+    v=1,
 ) -> xtgeo.Well:
     """This makes an instance of a Well directly from Roxar RMS.
 
@@ -118,6 +119,7 @@ def well_from_roxar(
         lognames_strict=lognames_strict,
         inclmd=inclmd,
         inclsurvey=inclsurvey,
+        v=v,
     )
 
 
@@ -669,6 +671,7 @@ class Well:
         lognames_strict: bool | None = False,
         inclmd: bool | None = False,
         inclsurvey: bool | None = False,
+        v=1,
     ):
         kwargs = _well_roxapi.import_well_roxapi(
             project,
@@ -679,6 +682,7 @@ class Well:
             lognames_strict=lognames_strict,
             inclmd=inclmd,
             inclsurvey=inclsurvey,
+            v=v,
         )
         return cls(**kwargs)
 
