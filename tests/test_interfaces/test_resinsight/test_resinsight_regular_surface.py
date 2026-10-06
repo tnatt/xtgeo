@@ -230,7 +230,8 @@ def test_resolve_surface_folder(resinsight_instance: RipsInstanceType):
     names = [f.surface_user_description for f in parent.sub_collections()]
     assert names.count("PATH_B") == 1
 
-    assert resolve_folder(root, "NO_SUCH_FOLDER", _NAME_ATTR) is None
+    with pytest.raises(RuntimeError, match="Cannot find surface folder"):
+        resolve_folder(root, "NO_SUCH_FOLDER", _NAME_ATTR)
 
 
 @pytest.mark.requires_resinsight
