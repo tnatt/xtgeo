@@ -11,7 +11,7 @@ import numpy.ma as ma
 import scipy.interpolate
 import scipy.ndimage
 from numpy.typing import NDArray
-from scipy.spatial import cKDTree
+from scipy.spatial import Delaunay, QhullError, cKDTree
 
 import xtgeo._internal as _internal
 from xtgeo.common.constants import UNDEF, UNDEF_LIMIT
@@ -1708,17 +1708,29 @@ def points_kriging_gridding(
 # ======================================================================================
 # FUNCTIONS doing gridding from 3D properties
 # ======================================================================================
+def _get_support_mask(grid_coords, surface_nodes, spacing_multiplier):
+    tree = cKDTree(grid_coords)
+
+    # Distance from every point to its nearest grid coordinate
+    cell_distances, _ = tree.query(grid_coords, k=2)
+    cell_spacing = cell_distances[:, 1]
+
+    # Nearest active source point to every target surface node.
+    target_distance, nearest = tree.query(surface_nodes)
+
+    # Allow interpolation only reasonably close to an active cell.
+    return target_distance <= spacing_multiplier * cell_spacing[nearest]
 
 
 def avgsum_from_3dprops_gridding(
     self: RegularSurface,
     summing: bool = False,
-    xprop: Any = None,
-    yprop: Any = None,
-    mprop: Any = None,
-    dzprop: Any = None,
-    truncate_le: Any = None,
-    zoneprop: Any = None,
+    xprop: np.ndarray | None = None,
+    yprop: np.ndarray | None = None,
+    mprop: np.ndarray | None = None,
+    dzprop: np.ndarray | None = None,
+    truncate_le: float | None = None,
+    zoneprop: np.ndarray | None = None,
     zone_minmax: tuple[int, int] | None = None,
     coarsen: int = 1,
     zone_avg: bool = False,
@@ -1751,106 +1763,74 @@ def avgsum_from_3dprops_gridding(
         summing=summing,
     )
 
-    gnlay = xprop.shape[2]
-
     # avoid artifacts from inactive cells that slips through somehow...(?)
     if dzprop.max() > UNDEF_LIMIT:
         raise RuntimeError("Bug: DZ with unphysical values present")
 
-    trimbydz = False
-    if not summing:
-        trimbydz = True
-
-    if summing and mask_outside:
-        trimbydz = True
+    trimbydz = not summing or mask_outside
 
     xiv, yiv = self.get_xy_values()
+    surface_nodes = np.column_stack((xiv.ravel(), yiv.ravel()))
 
-    # weight are needed if zoneprop is not follow layers, but rather regions
-    weights = dzprop.copy() * 0.0 + 1.0
-    weights[zoneprop < zone_minmax[0]] = 0.0
-    weights[zoneprop > zone_minmax[1]] = 0.0
+    valid_zone = (zoneprop >= zone_minmax[0]) & (zoneprop <= zone_minmax[1])
+    valid_mask = (xprop < 1e20) & valid_zone & (dzprop > 0.0)
 
-    # this operation is needed if zoneprop is aka a region ("irregular zone")
-    zoneprop = ma.masked_less(zoneprop, zone_minmax[0])
-    zoneprop = ma.masked_greater(zoneprop, zone_minmax[1])
+    msum = np.zeros((self.dimensions), order="C")
+    dzsum = np.zeros((self.dimensions), order="C")
 
-    for klay0 in range(gnlay):
-        k1lay = klay0 + 1
+    for klay0 in range(xprop.shape[2]):
+        logger.debug("Mapping for layer or zone %s ....", klay0 + 1)
 
-        if k1lay == 1:
-            msum = np.zeros((self.ncol, self.nrow), order="C")
-            dzsum = np.zeros((self.ncol, self.nrow), order="C")
-
-        numz = zoneprop[::, ::, klay0].mean()
-        if isinstance(numz, float):
-            numz = int(round(zoneprop[::, ::, klay0].mean()))
-            if numz < zone_minmax[0] or numz > zone_minmax[1]:
-                continue
-        else:
+        valid = valid_mask[:, :, klay0].ravel(order="C")
+        if not valid.any():
             continue
 
-        qmcompute = True
-        if summing:
-            propsum = mprop[:, :, klay0].sum()
-            if abs(propsum) < 1e-12:
-                logger.debug("Too little HC, skip layer K = %s", k1lay)
-                qmcompute = False
-            else:
-                logger.debug("Z property sum is %s", propsum)
+        mvv = mprop[:, :, klay0].ravel(order="C")[valid]
+        xcv = xprop[:, :, klay0].ravel(order="C")[valid]
+        ycv = yprop[:, :, klay0].ravel(order="C")[valid]
+        dzv = dzprop[:, :, klay0].ravel(order="C")[valid]
 
-        logger.debug("Mapping for layer or zone %s ....", k1lay)
+        mvdz = mvv if summing else mvv * dzv
 
-        xcv = xprop[::, ::, klay0].ravel(order="C")
-        ycv = yprop[::, ::, klay0].ravel(order="C")
-        mvv = mprop[::, ::, klay0].ravel(order="C")
-        dzv = dzprop[::, ::, klay0].ravel(order="C")
-        wei = weights[::, ::, klay0].ravel(order="C")
+        # Skip HC thickness calculation when too little HC is present
+        interpolate_values = not summing or abs(mvv.sum()) > 1e-12
 
-        # this is done to avoid problems if undef values still remains
-        # in the coordinates (assume Y undef where X undef):
-        xcc = xcv.copy()
-        xcv = xcv[xcc < 1e20]
-        ycv = ycv[xcc < 1e20]
-        mvv = mvv[xcc < 1e20]
-        dzv = dzv[xcc < 1e20]
-        wei = wei[xcc < 1e20]
+        grid_coords = np.column_stack((xcv, ycv))
 
-        mvdz = mvv * wei if summing else mvv * dzv * wei
+        mvdzi = None
+        dzi = None
 
-        if qmcompute:
-            try:
-                mvdzi = scipy.interpolate.griddata(
-                    (xcv, ycv), mvdz, (xiv, yiv), method="linear", fill_value=0.0
+        try:
+            tri = Delaunay(grid_coords)
+
+            if interpolate_values:
+                mvdzi = scipy.interpolate.LinearNDInterpolator(
+                    tri, mvdz, fill_value=0.0
+                )(xiv, yiv)
+
+            if trimbydz:
+                dzi = scipy.interpolate.LinearNDInterpolator(tri, dzv, fill_value=0.0)(
+                    xiv, yiv
                 )
-            except ValueError:
-                warnings.warn("Some problems in gridding ... will contue", UserWarning)
-                continue
 
-            msum = msum + mvdzi
+        except (ValueError, QhullError):
+            warnings.warn("Some problems in gridding... will continue", UserWarning)
+            continue
 
-        if trimbydz:
-            try:
-                dzi = scipy.interpolate.griddata(
-                    (xcv, ycv), dzv, (xiv, yiv), method="linear", fill_value=0.0
-                )
-            except ValueError:
-                continue
+        support = _get_support_mask(
+            grid_coords, surface_nodes, spacing_multiplier=1.5
+        ).reshape(self.dimensions)
 
-            dzsum = dzsum + dzi
+        if mvdzi is not None:
+            msum[support] += mvdzi[support]
 
-    if not summing:
-        dzsum[dzsum == 0.0] = 1e-20
-        vvz = msum / dzsum
-        vvz = ma.masked_invalid(vvz)
-    else:
-        vvz = msum
+        if dzi is not None:
+            dzsum[support] += dzi[support]
 
-    vvz = (
-        ma.masked_where(dzsum < 1.1e-20, vvz) if trimbydz else ma.array(vvz)
-    )  # so the result becomes a ma array
+    vvz = msum if summing else msum / ma.masked_equal(dzsum, 0.0)
+    vvz = ma.masked_where(dzsum <= 0, vvz) if trimbydz else ma.array(vvz)
 
-    if truncate_le:
+    if truncate_le is not None:
         vvz = ma.masked_less(vvz, truncate_le)
 
     self.values = vvz
@@ -1860,16 +1840,16 @@ def avgsum_from_3dprops_gridding(
 
 
 def _zone_averaging(
-    xprop: Any,
-    yprop: Any,
-    zoneprop: Any,
+    xprop: np.ndarray,
+    yprop: np.ndarray,
+    zoneprop: np.ndarray,
     zone_minmax: tuple[int, int] | None,
     coarsen: int,
     zone_avg: bool,
-    dzprop: Any,
-    mprop: Any,
+    dzprop: np.ndarray,
+    mprop: np.ndarray,
     summing: bool = False,
-) -> tuple[FloatArray, FloatArray, FloatArray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     # General preprocessing, and...
     # Change the 3D numpy array so they get layers by
     # averaging across zones. This may speed up a lot,
