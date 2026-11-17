@@ -3175,15 +3175,15 @@ class RegularSurface:
 
     def hc_thickness_from_3dprops(
         self,
-        xprop=None,
-        yprop=None,
-        hcpfzprop=None,
-        zoneprop=None,
-        zone_minmax=None,
-        dzprop=None,
-        zone_avg=False,
-        coarsen=1,
-        mask_outside=False,
+        xprop: np.ndarray | None = None,
+        yprop: np.ndarray | None = None,
+        hcpfzprop: np.ndarray | None = None,
+        zoneprop: np.ndarray | None = None,
+        zone_minmax: tuple | None = None,
+        dzprop: np.ndarray | None = None,
+        zone_avg: bool = False,
+        coarsen: int = 1,
+        mask_outside: bool = False,
     ):
         """Make a thickness weighted HC thickness map.
 
@@ -3215,8 +3215,9 @@ class RegularSurface:
             mask_outside (bool): Will mask the result map undef where sum of DZ
                 is zero. Default is False as it costs some extra CPU.
 
+
         Returns:
-            True if operation went OK (but check result!), False if not
+            Nothing explicit, but updates the surface object.
         """
         for inum, myprop in enumerate([xprop, yprop, hcpfzprop, zoneprop]):
             if isinstance(myprop, ma.MaskedArray):
@@ -3225,7 +3226,7 @@ class RegularSurface:
                     "is a masked array, not a plain numpy ndarray"
                 )
 
-        status = _regsurf_gridding.avgsum_from_3dprops_gridding(
+        _regsurf_gridding.avgsum_from_3dprops_gridding(
             self,
             summing=True,
             xprop=xprop,
@@ -3239,20 +3240,17 @@ class RegularSurface:
             mask_outside=mask_outside,
         )
 
-        if status is False:
-            raise RuntimeError("Failure from hc thickness calculation")
-
     def avg_from_3dprop(
         self,
-        xprop=None,
-        yprop=None,
-        mprop=None,
-        dzprop=None,
-        truncate_le=None,
-        zoneprop=None,
-        zone_minmax=None,
-        coarsen=1,
-        zone_avg=False,
+        xprop: np.ndarray | None = None,
+        yprop: np.ndarray | None = None,
+        mprop: np.ndarray | None = None,
+        dzprop: np.ndarray | None = None,
+        truncate_le: float | None = None,
+        zoneprop: np.ndarray | None = None,
+        zone_minmax: tuple | None = None,
+        coarsen: int = 1,
+        zone_avg: bool = False,
     ):
         """Average map (DZ weighted) based on numpy arrays of properties from a 3D grid.
 
@@ -3270,6 +3268,9 @@ class RegularSurface:
             zoneprop: 3D numpy to a zone property
             zone_minmax: a tuple with from-to zones to combine
                 (e.g. (1,3))
+            zone_avg (bool): A zone averaging is done prior to map gridding.
+                This may speed up the process a lot, but result will be less
+                precise. Default is False.
 
         Returns:
             Nothing explicit, but updates the surface object.
