@@ -1710,6 +1710,61 @@ def points_kriging_gridding(
 # ======================================================================================
 
 
+def _get_target_mask(
+    tri: Delaunay,
+    grid_coords: np.ndarray,
+    surface_nodes: np.ndarray,
+    edge_multiplier: float = 3,
+) -> np.ndarray:
+    """Get surface nodes supported by the active grid geometry."""
+    if len(grid_coords) < 3:
+        return np.zeros(len(surface_nodes), dtype=bool)
+
+    tree = cKDTree(grid_coords)
+
+    # Estimate the local grid spacing from the nearest 4 neighbouring cell.
+    k = min(5, len(grid_coords))
+    cell_distances, _ = tree.query(grid_coords, k=k)
+
+    # Use the maximum distance to the nearest 4 neighbour cells as the local spacing.
+    local_spacing = cell_distances[:, 1:].max(axis=1)
+
+    # Prevent isolated cells and large gaps from defining the local spacing.
+    spacing_limit = np.percentile(local_spacing, 90)
+    local_spacing = np.minimum(local_spacing, spacing_limit)
+
+    # Get the coordinates of the vertices of every Delaunay triangle.
+    triangle_coords = grid_coords[tri.simplices]
+
+    edge01 = np.linalg.norm(
+        triangle_coords[:, 0] - triangle_coords[:, 1],
+        axis=1,
+    )
+    edge12 = np.linalg.norm(
+        triangle_coords[:, 1] - triangle_coords[:, 2],
+        axis=1,
+    )
+    edge20 = np.linalg.norm(
+        triangle_coords[:, 2] - triangle_coords[:, 0],
+        axis=1,
+    )
+    max_edge = np.maximum.reduce((edge01, edge12, edge20))
+
+    # Use the coarsest local spacing represented by each triangle.
+    # This avoids unnecessarily cutting coarse/refined boundaries.
+    triangle_spacing = local_spacing[tri.simplices].max(axis=1)
+    valid_triangle = max_edge <= edge_multiplier * triangle_spacing
+
+    # Determine which triangle contains each surface node.
+    simplex = tri.find_simplex(surface_nodes, tol=1e-12)
+    inside = simplex >= 0
+
+    target_mask = np.zeros(len(surface_nodes), dtype=bool)
+    target_mask[inside] = valid_triangle[simplex[inside]]
+
+    return target_mask
+
+
 def avgsum_from_3dprops_gridding(
     self: RegularSurface,
     summing: bool = False,
@@ -1723,6 +1778,7 @@ def avgsum_from_3dprops_gridding(
     coarsen: int = 1,
     zone_avg: bool = False,
     mask_outside: bool = False,
+    interpolate_active_only: bool = False,
 ) -> None:
     """Get surface average from a 3D grid prop."""
     # NOTE:
@@ -1760,9 +1816,13 @@ def avgsum_from_3dprops_gridding(
     trimbydz = not summing or mask_outside
 
     xiv, yiv = self.get_xy_values()
+    surface_nodes = np.column_stack((xiv.ravel(), yiv.ravel()))
 
     valid_zone = (zoneprop >= zone_minmax[0]) & (zoneprop <= zone_minmax[1])
     valid_mask = xprop < 1e20
+
+    if interpolate_active_only:
+        valid_mask = valid_mask & valid_zone & (dzprop > 0.0)
 
     msum = np.zeros((self.dimensions), order="C")
     dzsum = np.zeros((self.dimensions), order="C")
@@ -1784,7 +1844,8 @@ def avgsum_from_3dprops_gridding(
         dzv = dzprop[:, :, klay0].ravel(order="C")[valid]
 
         mvdz = mvv if summing else mvv * dzv
-        mvdz *= zone_in_layer
+        if not interpolate_active_only:
+            mvdz *= zone_in_layer
 
         # Skip HC thickness calculation when too little HC is present
         interpolate_values = not summing or abs(mvdz.sum()) > 1e-12
@@ -1809,10 +1870,17 @@ def avgsum_from_3dprops_gridding(
             warnings.warn("Some problems in gridding... will continue", UserWarning)
             continue
 
+        target = slice(None)
+        if interpolate_active_only:
+            target = _get_target_mask(tri, grid_coords, surface_nodes).reshape(
+                self.dimensions
+            )
+
         if mvdzi is not None:
-            msum += mvdzi
+            msum[target] += mvdzi[target]
+
         if dzi is not None:
-            dzsum += dzi
+            dzsum[target] += dzi[target]
 
     vvz = msum if summing else msum / ma.masked_equal(dzsum, 0.0)
     vvz = (

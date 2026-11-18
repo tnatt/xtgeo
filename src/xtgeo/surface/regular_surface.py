@@ -3184,6 +3184,7 @@ class RegularSurface:
         zone_avg: bool = False,
         coarsen: int = 1,
         mask_outside: bool = False,
+        interpolate_active_only: bool = False,
     ):
         """Make a thickness weighted HC thickness map.
 
@@ -3214,6 +3215,13 @@ class RegularSurface:
                 speed up process, but less precise result. Default=1
             mask_outside (bool): Will mask the result map undef where sum of DZ
                 is zero. Default is False as it costs some extra CPU.
+            interpolate_active_only (bool): If True only active cells
+                (DZ > 0) are used in the interpolation. If False (default),
+                inactive cells are included, which can preserve more zero areas
+                around inactive regions. True can be faster when many cells are
+                inactive. For nested hybrid grids, use True together with
+                zone_avg=False.
+
 
 
         Returns:
@@ -3238,6 +3246,7 @@ class RegularSurface:
             zone_avg=zone_avg,
             coarsen=coarsen,
             mask_outside=mask_outside,
+            interpolate_active_only=interpolate_active_only,
         )
 
     def avg_from_3dprop(
@@ -3251,6 +3260,7 @@ class RegularSurface:
         zone_minmax: tuple | None = None,
         coarsen: int = 1,
         zone_avg: bool = False,
+        interpolate_active_only: bool = False,
     ):
         """Average map (DZ weighted) based on numpy arrays of properties from a 3D grid.
 
@@ -3271,6 +3281,12 @@ class RegularSurface:
             zone_avg (bool): A zone averaging is done prior to map gridding.
                 This may speed up the process a lot, but result will be less
                 precise. Default is False.
+            interpolate_active_only (bool): If True only active cells
+                (DZ > 0) are used in the interpolation. If False (default),
+                inactive cells are included, which can preserve more zero areas
+                around inactive regions. True can be faster when many cells are
+                inactive. For nested hybrid grids, use True together with
+                zone_avg=False.
 
         Returns:
             Nothing explicit, but updates the surface object.
@@ -3294,6 +3310,7 @@ class RegularSurface:
             zone_minmax=zone_minmax,
             coarsen=coarsen,
             zone_avg=zone_avg,
+            interpolate_active_only=interpolate_active_only,
         )
 
     def quickplot(
